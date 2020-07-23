@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/claranet/go-zabbix-api"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
@@ -112,6 +113,12 @@ func resourceZabbixHost() *schema.Resource {
 				Type:     schema.TypeSet,
 				Elem:     &schema.Schema{Type: schema.TypeString},
 				Optional: true,
+			},
+			"macro": &schema.Schema{
+				Type:        schema.TypeMap,
+				Elem:        &schema.Schema{Type: schema.TypeString},
+				Optional:    true,
+				Description: "User macros for the host.",
 			},
 		},
 	}
@@ -277,6 +284,20 @@ func getTemplates(d *schema.ResourceData, api *zabbix.API) (zabbix.TemplateIDs, 
 	return hostTemplates, nil
 }
 
+func getHostMacro(d *schema.ResourceData) zabbix.Macros {
+	var macros zabbix.Macros
+
+	terraformMacros := d.Get("macro").(map[string]interface{})
+	for i, terraformMacro := range terraformMacros {
+		macro := zabbix.Macro{
+			MacroName: fmt.Sprintf("{$%s}", i),
+			Value:     terraformMacro.(string),
+		}
+		macros = append(macros, macro)
+	}
+	return macros
+}
+
 func createHostObj(d *schema.ResourceData, api *zabbix.API) (*zabbix.Host, error) {
 	host := zabbix.Host{
 		Host:   d.Get("host").(string),
@@ -312,6 +333,9 @@ func createHostObj(d *schema.ResourceData, api *zabbix.API) (*zabbix.Host, error
 	}
 
 	host.TemplateIDs = templates
+
+	host.UserMacros = getHostMacro(d)
+
 	return &host, nil
 }
 
@@ -349,6 +373,7 @@ func resourceZabbixHostRead(d *schema.ResourceData, meta interface{}) error {
 		"hostids":               d.Id(),
 		"selectInterfaces":      "extend",
 		"selectParentTemplates": []string{"name"},
+		"selectMacros":          "extend",
 	})
 
 	if err != nil {
@@ -386,6 +411,25 @@ func resourceZabbixHostRead(d *schema.ResourceData, meta interface{}) error {
 	}
 
 	d.Set("templates", templateNames)
+
+	macros := make(map[string]interface{}, len(host.UserMacros))
+
+	for _, macro := range host.UserMacros {
+		var name string
+		if noPrefix := strings.Split(macro.MacroName, "{$"); len(noPrefix) == 2 {
+			name = noPrefix[1]
+		} else {
+			return fmt.Errorf("Invalid macro name \"%s\"", macro.MacroName)
+		}
+		if noSuffix := strings.Split(name, "}"); len(noSuffix) == 2 {
+			name = noSuffix[0]
+		} else {
+			return fmt.Errorf("Invalid macro name \"%s\"", macro.MacroName)
+		}
+		macros[name] = macro.Value
+	}
+
+	d.Set("macro", macros)
 
 	params := zabbix.Params{
 		"output": []string{"name"},
