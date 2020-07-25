@@ -10,3 +10,5 @@ require (
 	github.com/hashicorp/terraform-plugin-sdk v1.9.0
 	github.com/mcuadros/go-version v0.0.0-20190830083331-035f6764e8d2
 )
+
+replace github.com/claranet/go-zabbix-api v1.0.0 => github.com/hkobayash/go-zabbix-api v1.1.2
