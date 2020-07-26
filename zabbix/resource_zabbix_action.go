@@ -597,9 +597,8 @@ func resourceZabbixAction() *schema.Resource {
 				},
 			},
 			"recovery_operation": {
-				Type:        schema.TypeList,
-				Optional:    true,
-				Description: "Not Implemented.",
+				Type:     schema.TypeList,
+				Optional: true,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"operation_id": {
@@ -634,9 +633,8 @@ func resourceZabbixAction() *schema.Resource {
 				},
 			},
 			"update_operation": {
-				Type:        schema.TypeList,
-				Optional:    true,
-				Description: "Not Implemented.",
+				Type:     schema.TypeList,
+				Optional: true,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"operation_id": {
@@ -685,9 +683,18 @@ func createActionObject(d *schema.ResourceData, api *zabbix.API) (*zabbix.Action
 		return nil, err
 	}
 
+	recOpe, err := createActionRecoveryOperationObject(d.Id(), d.Get("recovery_operation").([]interface{}), api)
+	if err != nil {
+		return nil, err
+	}
+
+	upOpe, err := createActionUpdateOperationObject(d.Get("update_operation").([]interface{}), api)
+	if err != nil {
+		return nil, err
+	}
+
 	eventSource := StringEventTypeMap[d.Get("event_source").(string)]
 
-	// FIXME: implement RecoveryOperation, UpdateOperation
 	action := zabbix.Action{
 		ActionID:        d.Id(),
 		Period:          d.Get("default_step_duration").(string),
@@ -705,7 +712,9 @@ func createActionObject(d *schema.ResourceData, api *zabbix.API) (*zabbix.Action
 			EvaluationType: StringActionEvaluationTypeMap[d.Get("calculation").(string)],
 			Formula:        d.Get("formula").(string),
 		},
-		Operations: ope,
+		Operations:         ope,
+		RecoveryOperations: recOpe,
+		UpdateOperations:   upOpe,
 	}
 
 	// NOTE: pause_suppressed set only TriggerEvent
@@ -786,6 +795,81 @@ func createActionOperationObject(id string, lst []interface{}, api *zabbix.API) 
 			MessageUsers:      msgUsers,
 			Templates:         templates,
 			Inventory:         inventory,
+		}
+		items = append(items, item)
+	}
+
+	return
+}
+
+func createActionRecoveryOperationObject(id string, lst []interface{}, api *zabbix.API) (items zabbix.ActionRecoveryOperations, err error) {
+	for _, v := range lst {
+		m := v.(map[string]interface{})
+		opeId := m["operation_id"].(string)
+
+		cmd, cmdHostGroups, cmdHosts, err := createActionOperationCommand(opeId, m["command"].([]interface{}), api)
+		if err != nil {
+			return nil, err
+		}
+
+		msg, msgUserGroups, msgUsers, err := createActionOperationMessage(opeId, m["message"].([]interface{}), api)
+		if err != nil {
+			return nil, err
+		}
+
+		t := m["type"].(string)
+		opeType := StringActionOperationTypeMap[t]
+		if t == "notify_all_involved" {
+			opeType = zabbix.NotifyRecoveryAllInvolved
+		}
+
+		item := zabbix.ActionRecoveryOperation{
+			OperationID:       opeId,
+			OperationType:     opeType,
+			ActionID:          id,
+			Command:           cmd,
+			CommandHostGroups: cmdHostGroups,
+			CommandHosts:      cmdHosts,
+			Message:           msg,
+			MessageUserGroups: msgUserGroups,
+			MessageUsers:      msgUsers,
+		}
+		items = append(items, item)
+	}
+
+	return
+}
+
+func createActionUpdateOperationObject(lst []interface{}, api *zabbix.API) (items zabbix.ActionUpdateOperations, err error) {
+	for _, v := range lst {
+		m := v.(map[string]interface{})
+		opeId := m["operation_id"].(string)
+
+		cmd, cmdHostGroups, cmdHosts, err := createActionOperationCommand(opeId, m["command"].([]interface{}), api)
+		if err != nil {
+			return nil, err
+		}
+
+		msg, msgUserGroups, msgUsers, err := createActionOperationMessage(opeId, m["message"].([]interface{}), api)
+		if err != nil {
+			return nil, err
+		}
+
+		t := m["type"].(string)
+		opeType := StringActionOperationTypeMap[t]
+		if t == "notify_all_involved" {
+			opeType = zabbix.NotifyUpdateAllInvolved
+		}
+
+		item := zabbix.ActionUpdateOperation{
+			OperationID:       opeId,
+			OperationType:     opeType,
+			Command:           cmd,
+			CommandHostGroups: cmdHostGroups,
+			CommandHosts:      cmdHosts,
+			Message:           msg,
+			MessageUserGroups: msgUserGroups,
+			MessageUsers:      msgUsers,
 		}
 		items = append(items, item)
 	}
@@ -1093,6 +1177,18 @@ func resourceZabbixActionRead(d *schema.ResourceData, meta interface{}) error {
 	}
 	d.Set("operation", operations)
 
+	recOpe, err := readActionRecoveryOperations(action.RecoveryOperations, api)
+	if err != nil {
+		return err
+	}
+	d.Set("recovery_operation", recOpe)
+
+	upOpe, err := readActionUpdateOperations(action.UpdateOperations, api)
+	if err != nil {
+		return err
+	}
+	d.Set("update_operation", upOpe)
+
 	log.Printf("[DEBUG] Action name is %s\n", action.Name)
 	return nil
 }
@@ -1122,7 +1218,7 @@ func readActionOperations(ops zabbix.ActionOperations, api *zabbix.API) (lst []i
 		m["step_from"] = v.StepFrom
 		m["step_to"] = v.StepTo
 
-		commands, err := readActionOperationCommands(v, api)
+		commands, err := readActionOperationCommands(v.Command, v.CommandHostGroups, v.CommandHosts, api)
 		if err != nil {
 			return nil, err
 		}
@@ -1134,7 +1230,7 @@ func readActionOperations(ops zabbix.ActionOperations, api *zabbix.API) (lst []i
 		}
 		m["host_groups"] = hostGroups
 
-		messages, err := readActionOperationMessages(v, api)
+		messages, err := readActionOperationMessages(v.Message, v.MessageUserGroups, v.MessageUsers, api)
 		if err != nil {
 			return nil, err
 		}
@@ -1156,24 +1252,76 @@ func readActionOperations(ops zabbix.ActionOperations, api *zabbix.API) (lst []i
 	return
 }
 
-func readActionOperationCommands(op zabbix.ActionOperation, api *zabbix.API) (lst []interface{}, err error) {
-	if op.Command == nil {
+func readActionRecoveryOperations(ops zabbix.ActionRecoveryOperations, api *zabbix.API) (lst []interface{}, err error) {
+	for _, v := range ops {
+		m := map[string]interface{}{}
+		m["operation_id"] = v.OperationID
+		m["type"] = ActionOperationTypeStringMap[v.OperationType]
+
+		commands, err := readActionOperationCommands(v.Command, v.CommandHostGroups, v.CommandHosts, api)
+		if err != nil {
+			return nil, err
+		}
+		m["command"] = commands
+
+		messages, err := readActionOperationMessages(v.Message, v.MessageUserGroups, v.MessageUsers, api)
+		if err != nil {
+			return nil, err
+		}
+		m["message"] = messages
+
+		lst = append(lst, m)
+	}
+
+	return
+}
+
+func readActionUpdateOperations(ops zabbix.ActionUpdateOperations, api *zabbix.API) (lst []interface{}, err error) {
+	for _, v := range ops {
+		m := map[string]interface{}{}
+		m["operation_id"] = v.OperationID
+		m["type"] = ActionOperationTypeStringMap[v.OperationType]
+
+		commands, err := readActionOperationCommands(v.Command, v.CommandHostGroups, v.CommandHosts, api)
+		if err != nil {
+			return nil, err
+		}
+		m["command"] = commands
+
+		messages, err := readActionOperationMessages(v.Message, v.MessageUserGroups, v.MessageUsers, api)
+		if err != nil {
+			return nil, err
+		}
+		m["message"] = messages
+
+		lst = append(lst, m)
+	}
+
+	return
+}
+
+func readActionOperationCommands(
+	cmd *zabbix.ActionOperationCommand,
+	groups zabbix.ActionOperationCommandHostGroups,
+	hosts zabbix.ActionOperationCommandHosts,
+	api *zabbix.API) (lst []interface{}, err error) {
+	if cmd == nil {
 		return
 	}
 
 	m := map[string]interface{}{}
-	m["type"] = ActionOperationCommandTypeStringMap[op.Command.Type]
-	m["auth_type"] = ActionOperationCommandAuthTypeStringMap[op.Command.AuthType]
-	m["execute_on"] = ActionOperationCommandExecutorTypeStringMap[op.Command.ExecuteOn]
-	m["command"] = op.Command.Command
-	m["username"] = op.Command.Username
-	m["password"] = op.Command.Password
-	m["port"] = op.Command.Port
-	m["private_key_file"] = op.Command.PrivateKey
-	m["public_key_file"] = op.Command.PublicKey
-	m["script_id"] = op.Command.ScriptID
+	m["type"] = ActionOperationCommandTypeStringMap[cmd.Type]
+	m["auth_type"] = ActionOperationCommandAuthTypeStringMap[cmd.AuthType]
+	m["execute_on"] = ActionOperationCommandExecutorTypeStringMap[cmd.ExecuteOn]
+	m["command"] = cmd.Command
+	m["username"] = cmd.Username
+	m["password"] = cmd.Password
+	m["port"] = cmd.Port
+	m["private_key_file"] = cmd.PrivateKey
+	m["public_key_file"] = cmd.PublicKey
+	m["script_id"] = cmd.ScriptID
 
-	target, err := readActionOperationCommandTargets(op, api)
+	target, err := readActionOperationCommandTargets(groups, hosts, api)
 	if err != nil {
 		return nil, err
 	}
@@ -1183,10 +1331,13 @@ func readActionOperationCommands(op zabbix.ActionOperation, api *zabbix.API) (ls
 	return
 }
 
-func readActionOperationCommandTargets(op zabbix.ActionOperation, api *zabbix.API) (lst []interface{}, err error) {
-	if len(op.CommandHostGroups) > 0 {
+func readActionOperationCommandTargets(
+	groups zabbix.ActionOperationCommandHostGroups,
+	hosts zabbix.ActionOperationCommandHosts,
+	api *zabbix.API) (lst []interface{}, err error) {
+	if len(groups) > 0 {
 		var groupIds []string
-		for _, g := range op.CommandHostGroups {
+		for _, g := range groups {
 			groupIds = append(groupIds, g.GroupID)
 		}
 		params := zabbix.Params{
@@ -1201,7 +1352,7 @@ func readActionOperationCommandTargets(op zabbix.ActionOperation, api *zabbix.AP
 		for _, g := range res {
 			groupMap[g.GroupID] = g.Name
 		}
-		for _, g := range op.CommandHostGroups {
+		for _, g := range groups {
 			m := map[string]interface{}{}
 			m["type"] = "host_group"
 			m["value"] = groupMap[g.GroupID]
@@ -1209,9 +1360,9 @@ func readActionOperationCommandTargets(op zabbix.ActionOperation, api *zabbix.AP
 		}
 	}
 
-	if len(op.CommandHosts) > 0 {
+	if len(hosts) > 0 {
 		var hostIds []string
-		for _, h := range op.CommandHosts {
+		for _, h := range hosts {
 			if h.HostID == "0" {
 				continue
 			}
@@ -1229,7 +1380,7 @@ func readActionOperationCommandTargets(op zabbix.ActionOperation, api *zabbix.AP
 		for _, h := range res {
 			hostMap[h.HostID] = h.Host
 		}
-		for _, h := range op.CommandHosts {
+		for _, h := range hosts {
 			m := map[string]interface{}{}
 			if h.HostID == "0" {
 				m["type"] = "current_host"
@@ -1274,18 +1425,22 @@ func readActionOperationHostGroups(grps zabbix.ActionOperationHostGroups, api *z
 	return
 }
 
-func readActionOperationMessages(op zabbix.ActionOperation, api *zabbix.API) (lst []interface{}, err error) {
-	if op.Message == nil {
+func readActionOperationMessages(
+	msg *zabbix.ActionOperationMessage,
+	groups zabbix.ActionOperationMessageUserGroups,
+	users zabbix.ActionOperationMessageUsers,
+	api *zabbix.API) (lst []interface{}, err error) {
+	if msg == nil {
 		return
 	}
 
 	m := map[string]interface{}{}
-	m["default_message"] = op.Message.DefaultMessage == "1"
-	m["media_type_id"] = op.Message.MediaTypeID
-	m["subject"] = op.Message.Subject
-	m["message"] = op.Message.Message
+	m["default_message"] = msg.DefaultMessage == "1"
+	m["media_type_id"] = msg.MediaTypeID
+	m["subject"] = msg.Subject
+	m["message"] = msg.Message
 
-	target, err := readActionOperationMessageTargets(op, api)
+	target, err := readActionOperationMessageTargets(groups, users, api)
 	if err != nil {
 		return nil, err
 	}
@@ -1295,10 +1450,13 @@ func readActionOperationMessages(op zabbix.ActionOperation, api *zabbix.API) (ls
 	return
 }
 
-func readActionOperationMessageTargets(op zabbix.ActionOperation, api *zabbix.API) (lst []interface{}, err error) {
-	if len(op.MessageUserGroups) > 0 {
+func readActionOperationMessageTargets(
+	groups zabbix.ActionOperationMessageUserGroups,
+	users zabbix.ActionOperationMessageUsers,
+	api *zabbix.API) (lst []interface{}, err error) {
+	if len(groups) > 0 {
 		var groupIds []string
-		for _, g := range op.MessageUserGroups {
+		for _, g := range groups {
 			groupIds = append(groupIds, g.UserGroupID)
 		}
 		params := zabbix.Params{
@@ -1317,9 +1475,9 @@ func readActionOperationMessageTargets(op zabbix.ActionOperation, api *zabbix.AP
 		}
 	}
 
-	if len(op.MessageUsers) > 0 {
+	if len(users) > 0 {
 		var userIds []string
-		for _, u := range op.MessageUsers {
+		for _, u := range users {
 			userIds = append(userIds, u.UserID)
 		}
 		params := zabbix.Params{
