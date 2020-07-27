@@ -309,10 +309,12 @@ var actionOperationMessageSchema = &schema.Resource{
 		"subject": {
 			Type:     schema.TypeString,
 			Optional: true,
+			Default:  "",
 		},
 		"message": {
 			Type:     schema.TypeString,
 			Optional: true,
+			Default:  "",
 		},
 		"target": {
 			Type:     schema.TypeSet,
